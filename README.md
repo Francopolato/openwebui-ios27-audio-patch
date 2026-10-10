@@ -1,67 +1,59 @@
-# Patch audio iOS 27 — Open WebUI (build 0.11.4)
+# iOS 27 audio patch — Open WebUI (build 0.11.4)
 
-Documentazione della patch che rende funzionante la **modalità vocale (call)** su iPhone con iOS 27: senza patch l'audio non viene riprodotto; con le prime versioni si sentivano scoppiettii. La v10 risolve entrambi i problemi.
+Patch that makes Open WebUI **voice mode (call)** work on iPhone with iOS 27. Without the patch, TTS audio is not played at all; early patch versions were audible but full of crackling/popping artifacts. This version (v10) fixes both problems: audio plays clean, and the microphone works during the conversation.
 
-## Problema
+Italian version: [README.it.md](README.it.md)
 
-Su iOS/Safari, la call feature di Open WebUI ha due blocchi:
+## The problem
 
-1. **Autoplay policy**: `#audioElement.play()` chiamato fuori da un gesto utente viene bloccato → nessun audio.
-2. **Sessione audio**: durante la registrazione del microfono WebKit usa il percorso "comunicazione" (bassa qualità) → scoppiettii nella riproduzione TTS. Se la sessione è forzatamente `playback`, invece, `getUserMedia` fallisce con `InvalidStateError`.
+On iOS/Safari, Open WebUI's call feature hits two walls:
 
-## Patch v10 (attuale) — comportamento
+1. **Autoplay policy** — `#audioElement.play()` called outside a user gesture is blocked → no audio at all.
+2. **Audio session quality** — while the microphone is capturing, WebKit routes output through the low-quality "communication" path → crackling during TTS playback. Forcing a `playback`-only session instead makes `getUserMedia` fail with `InvalidStateError`.
 
-- **Unlock al primo tap**: `AudioContext` creato/resumed + priming silenzioso nativo su `#audioElement` dentro il gesto.
-- **Sessione `speech-recognition`** quando si attiva la voice mode (fallback automatico a `play-and-record` se non accettata), ripristino a `playback` alla chiusura della call.
-- **Riproduzione TTS via Web Audio pulita**: `decodeAudioData` del file completo → `BufferSource` → destination (niente streaming = niente artefatti).
-- **Microfono in pausa durante la riproduzione** TTS e riaperto subito dopo: è questo che elimina gli scoppiettii (barge-in disabilitato mentre l'audio suona).
-- **Diagnosi remota**: piccoli `GET /d?...` nel log del server per verificare cosa succede sul dispositivo.
+## How v10 works
 
-## File nella cartella chunks
+- **Unlock on first tap**: `AudioContext` created/resumed + native silent priming of `#audioElement`, inside the user gesture (see [`ios-audio-unlock.js`](ios-audio-unlock.js)).
+- **`speech-recognition` session** when voice mode is activated (automatic fallback to `play-and-record` if not accepted), restored to `playback` when the call ends.
+- **Clean Web Audio playback**: full-file `decodeAudioData` → `BufferSource` → destination (no streaming, no artifacts).
+- **Microphone paused during TTS playback** and resumed right after — this is what eliminates crackling (barge-in is disabled while the answer is playing).
+- **Remote diagnostics**: small `GET /d?...` beacons visible in the server access log to see what actually happens on the device.
 
-```
-...\open_webui\frontend\_app\immutable\chunks\DUmjoMyK.js            ← chunk attivo (v10 applicata)
-...\chunks\DUmjoMyK.js.orig                                          ← backup originale build 0.11.4
-...\chunks\DUmjoMyK.js.patched-v10                                  ← file patchato v10
-```
+## The 4 patch points (chunk `DUmjoMyK.js`)
 
-Riferimenti storici (build 0.11.3, chunk `zKJlHFgk.js`) lasciati nella stessa cartella come `.orig`/`.patched`/`.patched-v2`, più i bat vecchi in `vecchio-build-0.11.3\`.
+1. Voice-mode click handler: priming + session type setting before `getUserMedia`.
+2. Error catch: exception name appended to the toast (`[NotAllowedError]`, `[InvalidStateError]`, …) + diagnostic beacon.
+3. Call stop handler: restores `audioSession.type = "playback"`.
+4. TTS playback function: Web Audio route with mic pause during playback, native element as fallback, beacon on success/failure.
 
-## Uso
+Plus the bootstrap appended at the end of the chunk (`ios-audio-unlock.js`).
 
-- `RIMETTI-patch-audio-v10.bat` → rimette la patch sul chunk attivo
-- `RIPRISTINA-patch-audio-v10.bat` → ripristina l'originale
+## Diagnostic markers (server log)
 
-⚠️ Dopo ogni modifica: **chiudere completamente Safari** e riaprire in finestra privata. I chunk Vite sono serviti con cache "immutable": un tab aperto continua a eseguire la copia in memoria, anche in privato se non svuoti i dati sito.
-
-⚠️ Ad ogni upgrade di Open WebUI il frontend viene rebuilt: i nomi dei chunk cambiano hash → la patch va riapplicata al nuovo chunk equivalente (la v10 è legata al build 0.11.4).
-
-## Marker di diagnosi (log server)
-
-| Marker | Significato |
+| Marker | Meaning |
 |---|---|
-| `GET /d?s=Y` | `navigator.audioSession` supportata al tap voice mode |
-| `GET /d?t=sr` / `?t=pr` | tipo di sessione impostato (speech-recognition / play-and-record) |
-| `GET /d?e=<nome>` | errore getUserMedia con nome eccezione |
-| `GET /d?w=ok` | riproduzione Web Audio partita |
-| `GET /d?r=<errore>` | restart microfono post-riproduzione fallito |
+| `GET /d?s=Y` | `navigator.audioSession` supported when voice mode is activated |
+| `GET /d?t=sr` / `?t=pr` | session type actually set (speech-recognition / play-and-record) |
+| `GET /d?e=<name>` | getUserMedia error with exception name |
+| `GET /d?w=ok` | Web Audio playback started |
+| `GET /d?r=<error>` | microphone restart after playback failed |
 
-## Storico versioni
+## Caveats
 
-| Versione | Idea | Esito |
+- Vite chunks are served with "immutable" cache: after patching, fully quit Safari and reopen in a private window (or clear site data), otherwise the device keeps running the old copy.
+- Every Open WebUI upgrade rebuilds the frontend and chunk hashes change → the patch must be re-applied to the new equivalent chunk. This patch is tied to build **0.11.4**.
+
+## Version history
+
+| Version | Idea | Result |
 |---|---|---|
-| v1 (0.11.3) | unlock + Web Audio API per la riproduzione | audio ok ma **scoppiettii** |
-| v2 (0.11.3) | solo unlock + priming silenzioso, playback nativo | pulita ma su iOS 27 call mode non riproduceva |
-| v3 | bootstrap globale, sessione `playback` | `InvalidStateError` su getUserMedia |
-| v4 | `play-and-record` durante call, ripristino immediato | bug sintassi (if in catena a virgole) → chunk rotto; poi capture silenzioso |
-| v5 | `play-and-record` per tutta la call, ripristino allo stop | call funzionante, playback muto (routing comunicazione) |
-| v6 | priming dell'`#audioElement` dentro il gesto del tap voice mode | play() ok ma audio non udibile durante call |
-| v7 | + diagnosi remota via fetch loggati | confermato `p=ok` con silenzio → routing, non policy |
-| v8 | riproduzione Web Audio pulita (decode completo) | **audio udibile** ma scoppiettii |
-| v9 | sessione `speech-recognition` durante call | ancora scoppiettii |
-| **v10** | mic in pausa durante la riproduzione + restart dopo | **funziona, audio pulito** ✅ |
-
-## GitHub
-
-Repo: https://github.com/Francopolato/openwebui-ios27-audio-patch
-
+| v1 (0.11.3) | unlock + Web Audio API playback | audible but crackling |
+| v2 (0.11.3) | unlock + silent priming only, native playback | clean, but no playback in iOS 27 call mode |
+| v3 | global bootstrap, `playback` session | `InvalidStateError` on getUserMedia |
+| v4 | `play-and-record` during call, immediate restore | syntax bug (if inside comma chain); then silent capture |
+| v5 | `play-and-record` for the whole call, restore at stop | call works, playback muted (communication routing) |
+| v6 | priming of `#audioElement` inside the voice-mode tap gesture | play() succeeds but audio not audible during call |
+| v7 | + remote diagnostics via logged fetches | confirmed `p=ok` with silence → routing issue, not policy |
+| v8 | clean Web Audio playback (full decode) | **audible** but still crackling |
+| v9 | `speech-recognition` session during call | still crackling |
+| **v10** | mic paused during playback + restart after | **works, clean audio** ✅ |
