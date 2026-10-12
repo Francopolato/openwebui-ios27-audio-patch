@@ -11,21 +11,23 @@ Su iOS/Safari la call feature di Open WebUI ha due blocchi:
 1. **Autoplay policy**: `#audioElement.play()` chiamato fuori da un gesto utente viene bloccato → nessun audio.
 2. **Qualità della sessione audio**: mentre il microfono cattura, WebKit instrada l'uscita nel percorso "comunicazione" (bassa qualità) → scoppiettii nella riproduzione TTS. Forzare una sessione solo `playback`, invece, fa fallire `getUserMedia` con `InvalidStateError`.
 
-## Come funziona la v10
+## Come funziona la v16 (versione finale)
 
 - **Unlock al primo tap**: `AudioContext` creato/resumed + priming silenzioso nativo su `#audioElement`, dentro il gesto utente.
-- **Sessione `speech-recognition`** quando si attiva la voice mode (fallback automatico a `play-and-record` se non accettata), ripristino a `playback` alla chiusura della call.
+- **Sessione `play-and-record`** quando si attiva la voice mode: è l'unico tipo di sessione su iOS 27 che permette `getUserMedia` ripetute (dopo ogni risposta TTS e dopo rientri nella chat vocale; `speech-recognition` fallisce con `InvalidStateError` alla seconda acquisizione).
 - **Riproduzione Web Audio pulita**: `decodeAudioData` del file completo → `BufferSource` → destination (niente streaming, niente artefatti).
-- **Microfono in pausa durante la riproduzione TTS** e riaperto subito dopo: è questo che elimina gli scoppiettii (barge-in disabilitato mentre l'audio suona).
+- **Microfono fermato completamente durante la riproduzione TTS** e ri-acquisito ~300 ms dopo la fine della risposta: è questo che elimina gli scoppiettii.
 - **Diagnosi remota**: piccoli `GET /d?...` visibili nel log del server.
+
+**Limite noto di iOS:** mentre la sessione call è attiva, l'uscita va al **ricevitore (orecchio)**, come in una telefonata. JS non può forzare il viva voce durante una registrazione attiva (`overrideOutputAudioPort` non è esposto da Safari). I tentativi di passare a `playback` durante la riproduzione (v17/v18) davano il viva voce ma con scoppiettii e ducking del volume, quindi la v16 sceglie la qualità sul routing. Fuori dalla voice mode, il TTS della chat normale va al viva voce come sempre.
 
 ## Contenuto del repo
 
 ```
 ios-audio-unlock.js                 bootstrap da appendere alla fine del chunk (da solo NON basta)
-patched/DUmjoMyK.js.patched-v10     chunk completo già patchato per il build 0.11.4 (bootstrap + i 4 edit)
-scripts/RIMETTI-patch-audio-v10.bat copia il file patchato sul chunk attivo (Windows, installazione di riferimento)
-scripts/RIPRISTINA-patch-audio-v10.bat ripristina il chunk originale dal .orig
+patched/DUmjoMyK.js.patched-v16     chunk completo già patchato per il build 0.11.4 (bootstrap + gli edit applicati)
+scripts/RIMETTI-patch-audio-v16.bat copia il file patchato sul chunk attivo (Windows, installazione di riferimento)
+scripts/RIPRISTINA-patch-audio-v16.bat ripristina il chunk originale dal .orig
 README.md / README.it.md            documentazione in inglese / italiano
 ```
 
@@ -71,4 +73,11 @@ Dopo la patch: **chiudere completamente Safari** e riaprire in finestra privata 
 | v7 | + diagnosi remota via fetch loggati | confermato `p=ok` con silenzio → routing, non policy |
 | v8 | riproduzione Web Audio pulita (decode completo) | **udibile** ma scoppiettii |
 | v9 | sessione `speech-recognition` durante call | ancora scoppiettii |
-| **v10** | mic in pausa durante la riproduzione + restart dopo | **funziona, audio pulito** ✅ |
+| **v10** | mic in pausa durante la riproduzione + restart dopo | funziona, audio pulito (ma riapertura rotta) |
+| v11 | cleanup stream corretto prima del restart + beacon decode | restart ancora rotto su iOS 27 |
+| v12 | stop del vecchio MediaRecorder prima della ri-acquisizione | `InvalidStateError` alla ri-acquisizione |
+| v13 | disabilitazione track (`enabled=false`) invece di fermarle | conversazione ok, ma tornano gli scoppiettii (sessione attiva) |
+| v14 | fallback attivazione: speech-recognition → play-and-record retry | stabile come la v1 (scoppiettii), riapertura ok |
+| **v16** | play-and-record fisso + stop completo dei track durante la riproduzione + ri-acquisizione ritardata | **versione finale: audio pulito, conversazione continua, riapertura ok; uscita sul ricevitore in call** ✅ |
+| v17 | switch a `playback` durante la finestra di riproduzione (Web Audio) | viva voce ma scoppiettii (artefatti di ri-configurazione) |
+| v18 | stesso switch + elemento nativo | viva voce ma qualità pessima + ducking — abbandonata |

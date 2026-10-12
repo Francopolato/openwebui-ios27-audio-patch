@@ -11,21 +11,23 @@ On iOS/Safari, Open WebUI's call feature hits two walls:
 1. **Autoplay policy** — `#audioElement.play()` called outside a user gesture is blocked → no audio at all.
 2. **Audio session quality** — while the microphone is capturing, WebKit routes output through the low-quality "communication" path → crackling during TTS playback. Forcing a `playback`-only session instead makes `getUserMedia` fail with `InvalidStateError`.
 
-## How v10 works
+## How v16 works (final version)
 
 - **Unlock on first tap**: `AudioContext` created/resumed + native silent priming of `#audioElement`, inside the user gesture.
-- **`speech-recognition` session** when voice mode is activated (automatic fallback to `play-and-record` if not accepted), restored to `playback` when the call ends.
+- **`play-and-record` session** when voice mode is activated — it is the only iOS 27 session type that allows repeated `getUserMedia` (both after each TTS response and after re-entering voice chat; `speech-recognition` fails with `InvalidStateError` on the second acquisition).
 - **Clean Web Audio playback**: full-file `decodeAudioData` → `BufferSource` → destination (no streaming, no artifacts).
-- **Microphone paused during TTS playback** and resumed right after — this is what eliminates crackling (barge-in is disabled while the answer is playing).
+- **Microphone fully stopped during TTS playback** and re-acquired ~300 ms after the answer ends — this is what eliminates crackling.
 - **Remote diagnostics**: small `GET /d?...` beacons visible in the server access log.
+
+**Known iOS limitation:** while the call session is active, output is routed to the **earpiece (receiver)**, like a phone call. JS cannot force loudspeaker during an active recording session (`overrideOutputAudioPort` is not exposed by Safari). Experiments with switching the session to `playback` during playback (v17/v18) got loudspeaker but introduced crackling and volume ducking, so v16 keeps quality over routing. Outside voice mode, normal chat TTS plays on the speaker as usual.
 
 ## Repository contents
 
 ```
 ios-audio-unlock.js                 bootstrap to append at the end of the chunk (alone it is NOT enough)
-patched/DUmjoMyK.js.patched-v10     full patched chunk for build 0.11.4 (bootstrap + the 4 edits already applied)
-scripts/RIMETTI-patch-audio-v10.bat copies the patched file over the active chunk (Windows, this install)
-scripts/RIPRISTINA-patch-audio-v10.bat restores the original chunk from .orig
+patched/DUmjoMyK.js.patched-v16     full patched chunk for build 0.11.4 (bootstrap + the edits already applied)
+scripts/RIMETTI-patch-audio-v16.bat copies the patched file over the active chunk (Windows, this install)
+scripts/RIPRISTINA-patch-audio-v16.bat restores the original chunk from .orig
 README.md / README.it.md            documentation in English / Italian
 ```
 
@@ -71,4 +73,11 @@ After patching: **fully quit Safari** and reopen in a private window (or clear s
 | v7 | + remote diagnostics via logged fetches | confirmed `p=ok` with silence → routing issue, not policy |
 | v8 | clean Web Audio playback (full decode) | **audible** but still crackling |
 | v9 | `speech-recognition` session during call | still crackling |
-| **v10** | mic paused during playback + restart after | **works, clean audio** ✅ |
+| **v10** | mic paused during playback + restart after | works, clean audio (but re-entry broke) |
+| v11 | proper stream cleanup before restart + decode-error beacons | restart still broken on iOS 27 |
+| v12 | stop old MediaRecorder before re-acquisition | `InvalidStateError` on re-acquisition |
+| v13 | disable tracks (`enabled=false`) instead of stopping them | conversation works, but crackling returns (session stays active) |
+| v14 | activation fallback: speech-recognition → play-and-record retry | stable like v1 (crackling), re-entry fixed |
+| **v16** | play-and-record fixed + full track stop during playback + delayed re-acquisition | **final version: clean audio, conversation continues, re-entry OK; output on earpiece during call** ✅ |
+| v17 | session switch to `playback` during playback window (Web Audio) | loudspeaker but crackling (route reconfiguration artifacts) |
+| v18 | same switch + native element playback | loudspeaker but bad quality + volume ducking — abandoned |
